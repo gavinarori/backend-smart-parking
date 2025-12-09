@@ -145,7 +145,7 @@ app.post("/api/slot/:slotId/update", async (req, res) => {
   if (!slot) return res.status(404).json({ error: "Slot not found" });
 
   if (rfid) slot.lastRFID = rfid;
-  if (typeof occupied === "boolean") slot.occupied = occupied; // <-- NodeMCU controls this
+  if (typeof occupied === "boolean") slot.occupied = occupied; 
   if (gps) slot.gps = gps;
 
   slot.updatedAt = new Date();
