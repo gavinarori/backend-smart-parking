@@ -28,8 +28,8 @@ mongoose.connect(
 );
 
 const VALID_RFID = [
-  "CC D2 05 02",
-  "B1 2A 06 02"
+  "ccd252",
+  "b12a62"
 ];
 
 
@@ -57,10 +57,11 @@ app.post("/api/reserve", async (req, res) => {
   if (!slot) return res.status(404).json({ error: "Slot not found" });
   if (slot.reserved) return res.status(400).json({ error: "Slot already reserved" });
 
-  // auto-assign RFID
-  const availableRFID = VALID_RFID.find(async id => 
-      !(await ParkingSlot.findOne({ assignedRFID: id }))
-  );
+ const assigned = await ParkingSlot.find({ assignedRFID: { $in: VALID_RFID } }).lean();
+const usedRFIDs = assigned.map(s => s.assignedRFID);
+
+const availableRFID = VALID_RFID.find(id => !usedRFIDs.includes(id));
+
 
   if (!availableRFID) {
     return res.status(400).json({ error: "No free RFID cards available" });
@@ -84,26 +85,27 @@ app.post("/api/reserve", async (req, res) => {
 app.post("/api/auth/rfid", async (req, res) => {
   const { rfid, slotId } = req.body;
 
-  // Validate card exists in whitelist
   if (!VALID_RFID.includes(rfid))
-    return res.json({ status: "REJECTED", reason: "Unknown RFID" });
+    return res.json({ status: "FAIL", reason: "Unknown RFID" });
 
   const slot = await ParkingSlot.findOne({ slotId });
-  if (!slot) return res.json({ status: "REJECTED", reason: "Invalid slot" });
+  if (!slot) return res.json({ status: "FAIL", reason: "Invalid slot" });
 
-  // store last RFID seen
   slot.lastRFID = rfid;
-  await slot.save();
 
-  // CASE 1 — slot is free
+  // If free -> RFID authenticates the car arrival
   if (!slot.reserved && !slot.occupied) {
+    slot.occupied = true;
+    await slot.save();
+    await recalcParkingLot(slot.lotId);
+
     return res.json({
       status: "SUCCESS",
-      message: "Slot available. NodeMCU can allow parking."
+      message: "Car authenticated. Slot now occupied."
     });
   }
 
-  // CASE 2 — reserved but for a different card
+  // Reserved & wrong card
   if (slot.reserved && slot.assignedRFID !== rfid) {
     return res.json({
       status: "FAIL",
@@ -111,15 +113,19 @@ app.post("/api/auth/rfid", async (req, res) => {
     });
   }
 
-  // CASE 3 — reserved slot with correct RFID
+  // Reserved & correct card
   if (slot.reserved && slot.assignedRFID === rfid) {
+    slot.occupied = true;
+    await slot.save();
+    await recalcParkingLot(slot.lotId);
+
     return res.json({
       status: "SUCCESS",
-      message: "Correct reserved user. Allow parking."
+      message: "Correct user. Slot now occupied."
     });
   }
 
-  // CASE 4 — slot already occupied
+  // If already occupied
   if (slot.occupied) {
     return res.json({
       status: "FAIL",
@@ -138,9 +144,10 @@ app.post("/api/slot/:slotId/update", async (req, res) => {
   const slot = await ParkingSlot.findOne({ slotId });
   if (!slot) return res.status(404).json({ error: "Slot not found" });
 
-  slot.lastRFID = rfid || slot.lastRFID;
-  slot.occupied = occupied;
-  slot.gps = gps || slot.gps;
+  if (rfid) slot.lastRFID = rfid;
+  if (typeof occupied === "boolean") slot.occupied = occupied; // <-- NodeMCU controls this
+  if (gps) slot.gps = gps;
+
   slot.updatedAt = new Date();
   await slot.save();
 
@@ -148,6 +155,7 @@ app.post("/api/slot/:slotId/update", async (req, res) => {
 
   res.json({ success: true, slot });
 });
+
 
 
 app.get("/api/slot/:slotId/status", async (req, res) => {
